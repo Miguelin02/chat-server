@@ -93,6 +93,14 @@ app.post('/api/auth/register', async (req, res) => {
       });
     }
 
+    // Validar formato de username
+    if (!/^[a-zA-Z0-9_]+$/.test(username)) {
+      return res.status(400).json({ 
+        success: false, 
+        message: 'El username solo puede contener letras, números y guiones bajos' 
+      });
+    }
+
     // Validar longitud de password
     if (password.length < 6) {
       return res.status(400).json({ 
@@ -104,11 +112,19 @@ app.post('/api/auth/register', async (req, res) => {
     console.log(`📧 Intentando registrar usuario: ${username} con email: ${email}`);
 
     // Verificar si el usuario ya existe en nuestra tabla
-    const { data: usuarioExistente } = await supabase
+    const { data: usuarioExistente, error: checkError } = await supabase
       .from('usuarios')
       .select('email, nombre')
       .or(`email.eq.${email},nombre.eq.${username}`)
-      .single();
+      .maybeSingle(); // Usar maybeSingle() en lugar de single()
+
+    if (checkError && checkError.code !== 'PGRST116') {
+      console.log('❌ Error verificando usuario existente:', checkError);
+      return res.status(500).json({ 
+        success: false, 
+        message: 'Error verificando usuario existente' 
+      });
+    }
 
     if (usuarioExistente) {
       return res.status(409).json({ 
@@ -117,27 +133,38 @@ app.post('/api/auth/register', async (req, res) => {
       });
     }
 
-    // Registrar usuario en Supabase Auth
+    // Registrar usuario en Supabase Auth con metadata
     const { data: authData, error: authError } = await supabase.auth.admin.createUser({
       email,
       password,
       user_metadata: { 
         nombre: username,
         username: username 
-      }
+      },
+      email_confirm: true // Confirmar email automáticamente
     });
 
     if (authError) {
       console.log('❌ Error de Supabase Auth:', authError);
-      if (authError.message.includes('already registered')) {
+      
+      // Manejar errores específicos de Supabase
+      if (authError.message.includes('already registered') || authError.message.includes('already exists')) {
         return res.status(409).json({ 
           success: false, 
           message: 'El email ya está registrado' 
         });
       }
+      
+      if (authError.message.includes('Password should be')) {
+        return res.status(400).json({ 
+          success: false, 
+          message: 'La contraseña no cumple con los requisitos mínimos' 
+        });
+      }
+
       return res.status(400).json({ 
         success: false, 
-        message: authError.message 
+        message: `Error de registro: ${authError.message}` 
       });
     }
 
@@ -154,18 +181,58 @@ app.post('/api/auth/register', async (req, res) => {
       { expiresIn: '30d' }
     );
 
-    // Dar tiempo para que el trigger cree el perfil
-    await new Promise(resolve => setTimeout(resolve, 1000));
+    // Dar tiempo para que el trigger cree el perfil y reintentar si es necesario
+    let usuario = null;
+    let intentos = 0;
+    const maxIntentos = 5;
 
-    // Obtener datos del usuario creado
-    const { data: usuario, error: userError } = await supabase
-      .from('usuarios')
-      .select('*')
-      .eq('id', authData.user.id)
-      .single();
+    while (!usuario && intentos < maxIntentos) {
+      await new Promise(resolve => setTimeout(resolve, 500 * (intentos + 1))); // Espera incremental
+      
+      const { data: usuarioData, error: userError } = await supabase
+        .from('usuarios')
+        .select('*')
+        .eq('id', authData.user.id)
+        .maybeSingle();
 
-    if (userError) {
-      console.log('⚠️ Error obteniendo usuario de tabla usuarios:', userError);
+      if (userError && userError.code !== 'PGRST116') {
+        console.log(`⚠️ Error obteniendo usuario (intento ${intentos + 1}):`, userError);
+      } else if (usuarioData) {
+        usuario = usuarioData;
+        break;
+      }
+      
+      intentos++;
+      console.log(`🔄 Reintentando obtener usuario ${intentos}/${maxIntentos}...`);
+    }
+
+    // Si después de todos los intentos no se creó el perfil, crearlo manualmente
+    if (!usuario) {
+      console.log('⚠️ Perfil no encontrado, creando manualmente...');
+      
+      const { data: perfilCreado, error: createError } = await supabase
+        .from('usuarios')
+        .insert({
+          id: authData.user.id,
+          email: authData.user.email,
+          nombre: username,
+          estado: 'online',
+          last_seen: new Date().toISOString()
+        })
+        .select()
+        .single();
+
+      if (createError) {
+        console.log('❌ Error creando perfil manualmente:', createError);
+        // Aunque falle el perfil, el usuario se creó exitosamente
+        usuario = {
+          id: authData.user.id,
+          nombre: username,
+          email: authData.user.email
+        };
+      } else {
+        usuario = perfilCreado;
+      }
     }
 
     console.log('✅ Registro exitoso para:', username);
@@ -176,7 +243,7 @@ app.post('/api/auth/register', async (req, res) => {
       token,
       usuario: {
         id: authData.user.id,
-        username: usuario?.nombre || username,
+        username: usuario.nombre || username,
         email: authData.user.email
       }
     });
@@ -185,7 +252,7 @@ app.post('/api/auth/register', async (req, res) => {
     console.error('❌ Error en registro:', error);
     res.status(500).json({ 
       success: false, 
-      message: 'Error interno del servidor: ' + error.message
+      message: 'Error interno del servidor'
     });
   }
 });
@@ -618,7 +685,7 @@ app.get('/', (req, res) => {
   res.json({ 
     message: '🚀 Chat API funcionando correctamente',
     timestamp: new Date().toISOString(),
-    version: '1.0.1',
+    version: '1.0.2',
     endpoints: {
       auth: [
         'POST /api/auth/register',
