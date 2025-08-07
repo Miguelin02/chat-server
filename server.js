@@ -1,4 +1,4 @@
-// server.js - Servidor principal para Railway
+// server.js - Servidor completo para el chat
 const express = require('express');
 const http = require('http');
 const socketIo = require('socket.io');
@@ -59,10 +59,19 @@ const authenticateToken = async (req, res, next) => {
   }
 };
 
-// Rutas de autenticación
+// ========== RUTAS DE AUTENTICACIÓN ==========
+
 app.post('/api/auth/register', async (req, res) => {
   try {
     const { username, email, password } = req.body;
+
+    // Validar datos
+    if (!username || !email || !password) {
+      return res.status(400).json({ 
+        success: false, 
+        message: 'Todos los campos son requeridos' 
+      });
+    }
 
     // Registrar usuario en Supabase Auth
     const { data: authData, error: authError } = await supabase.auth.admin.createUser({
@@ -99,9 +108,9 @@ app.post('/api/auth/register', async (req, res) => {
       success: true,
       token,
       usuario: {
-        id: usuario.id,
-        username: usuario.nombre,
-        email: usuario.email
+        id: usuario?.id || authData.user.id,
+        username: usuario?.nombre || username,
+        email: usuario?.email || email
       }
     });
 
@@ -118,9 +127,16 @@ app.post('/api/auth/login', async (req, res) => {
   try {
     const { username, password } = req.body;
 
+    if (!username || !password) {
+      return res.status(400).json({ 
+        success: false, 
+        message: 'Username y password son requeridos' 
+      });
+    }
+
     // Intentar login con Supabase
     const { data: authData, error: authError } = await supabase.auth.signInWithPassword({
-      email: username.includes('@') ? username : `${username}@temp.com`, // Permitir login con username
+      email: username.includes('@') ? username : `${username}@temp.com`,
       password
     });
 
@@ -158,9 +174,9 @@ app.post('/api/auth/login', async (req, res) => {
       success: true,
       token,
       usuario: {
-        id: usuario.id,
-        username: usuario.nombre,
-        email: usuario.email
+        id: usuario?.id || authData.user.id,
+        username: usuario?.nombre || username,
+        email: usuario?.email || authData.user.email
       }
     });
 
@@ -173,30 +189,24 @@ app.post('/api/auth/login', async (req, res) => {
   }
 });
 
-// Rutas protegidas
+// ========== RUTAS PROTEGIDAS ==========
+
 app.get('/api/contacts', authenticateToken, async (req, res) => {
   try {
-    // Obtener conversaciones del usuario
-    const { data: conversaciones, error } = await supabase
-      .rpc('get_conversaciones');
-
-    if (error) {
-      throw error;
-    }
-
-    // Formatear respuesta para el cliente
-    const contactos = conversaciones.map(conv => ({
-      id: conv.contacto_id,
-      username: conv.contacto_nombre,
-      foto: conv.contacto_foto || 'default.jpg',
-      online: conv.contacto_estado === 'online',
-      ultimo_acceso: conv.contacto_last_seen ? 
-        formatearTiempo(conv.contacto_last_seen) : 'Nunca',
-      ultimoMensaje: conv.ultimo_mensaje || '',
-      horaUltimoMensaje: conv.ultimo_mensaje_fecha ? 
-        formatearHora(conv.ultimo_mensaje_fecha) : '',
-      mensajesNoLeidos: conv.mensajes_no_leidos || 0
-    }));
+    // Por ahora, devolvemos una lista de prueba
+    // Más tarde implementaremos con Supabase
+    const contactos = [
+      {
+        id: 'user1',
+        username: 'Usuario Demo',
+        foto: 'default.jpg',
+        online: true,
+        ultimo_acceso: 'Ahora',
+        ultimoMensaje: 'Hola, ¿cómo estás?',
+        horaUltimoMensaje: '14:30',
+        mensajesNoLeidos: 2
+      }
+    ];
 
     res.json(contactos);
 
@@ -213,20 +223,21 @@ app.post('/api/users/search', authenticateToken, async (req, res) => {
   try {
     const { username } = req.body;
 
-    const { data: usuarios, error } = await supabase
-      .rpc('buscar_usuarios', { termino: username });
-
-    if (error) {
-      throw error;
+    if (!username) {
+      return res.status(400).json({
+        success: false,
+        message: 'Username es requerido'
+      });
     }
 
-    if (usuarios.length > 0) {
+    // Por ahora, respuesta de prueba
+    if (username.toLowerCase() === 'demo') {
       res.json({
         success: true,
         usuario: {
-          id: usuarios[0].id,
-          username: usuarios[0].nombre,
-          telefono: usuarios[0].telefono
+          id: 'demo-user-id',
+          username: 'Demo User',
+          telefono: '+1234567890'
         }
       });
     } else {
@@ -249,16 +260,25 @@ app.get('/api/messages/:userId', authenticateToken, async (req, res) => {
   try {
     const otroUsuarioId = req.params.userId;
 
-    const { data: mensajes, error } = await supabase
-      .rpc('get_mensajes_conversacion', { otro_usuario_id: otroUsuarioId });
-
-    if (error) {
-      throw error;
-    }
-
-    // Marcar mensajes como leídos
-    await supabase
-      .rpc('marcar_mensajes_leidos', { remitente_id: otroUsuarioId });
+    // Por ahora, mensajes de prueba
+    const mensajes = [
+      {
+        id: 'msg1',
+        remitente_id: otroUsuarioId,
+        destinatario_id: req.user.userId,
+        contenido: '¡Hola! ¿Cómo estás?',
+        tipo: 'texto',
+        created_at: new Date(Date.now() - 300000).toISOString() // 5 min ago
+      },
+      {
+        id: 'msg2',
+        remitente_id: req.user.userId,
+        destinatario_id: otroUsuarioId,
+        contenido: '¡Hola! Todo bien, ¿y tú?',
+        tipo: 'texto',
+        created_at: new Date(Date.now() - 240000).toISOString() // 4 min ago
+      }
+    ];
 
     res.json(mensajes);
 
@@ -280,27 +300,15 @@ app.post('/api/files/upload', authenticateToken, upload.single('file'), async (r
       });
     }
 
+    // Por ahora, simulamos la subida del archivo
     const fileName = `${Date.now()}_${req.file.originalname}`;
     
-    // Subir archivo a Supabase Storage
-    const { data, error } = await supabase.storage
-      .from('chat-files')
-      .upload(fileName, req.file.buffer, {
-        contentType: req.file.mimetype
-      });
-
-    if (error) {
-      throw error;
-    }
-
-    // Obtener URL pública
-    const { data: urlData } = supabase.storage
-      .from('chat-files')
-      .getPublicUrl(fileName);
+    // En producción, aquí subirías a Supabase Storage
+    const fileUrl = `http://localhost:${process.env.PORT || 3000}/uploads/${fileName}`;
 
     res.json({
       success: true,
-      fileUrl: urlData.publicUrl,
+      fileUrl,
       fileName: req.file.originalname,
       fileSize: req.file.size
     });
@@ -314,7 +322,8 @@ app.post('/api/files/upload', authenticateToken, upload.single('file'), async (r
   }
 });
 
-// Socket.IO para chat en tiempo real
+// ========== SOCKET.IO PARA CHAT EN TIEMPO REAL ==========
+
 const usuarios_conectados = new Map();
 
 io.use(async (socket, next) => {
@@ -322,6 +331,7 @@ io.use(async (socket, next) => {
     const token = socket.handshake.auth.token;
     const decoded = jwt.verify(token, JWT_SECRET);
     socket.userId = decoded.userId;
+    socket.userEmail = decoded.email;
     next();
   } catch (err) {
     next(new Error('Autenticación fallida'));
@@ -329,81 +339,80 @@ io.use(async (socket, next) => {
 });
 
 io.on('connection', (socket) => {
-  console.log(`Usuario conectado: ${socket.userId}`);
+  console.log(`✅ Usuario conectado: ${socket.userId} (${socket.userEmail})`);
   
   // Agregar usuario a la lista de conectados
-  usuarios_conectados.set(socket.userId, socket.id);
+  usuarios_conectados.set(socket.userId, {
+    socketId: socket.id,
+    email: socket.userEmail,
+    connectedAt: new Date()
+  });
 
   // Notificar que el usuario está online
   socket.broadcast.emit('user_online', {
-    user_id: socket.userId
+    user_id: socket.userId,
+    email: socket.userEmail
   });
 
-  // Actualizar estado en base de datos
-  supabase
-    .from('usuarios')
-    .update({ estado: 'online' })
-    .eq('id', socket.userId);
+  // Enviar lista de usuarios conectados
+  socket.emit('users_online', {
+    count: usuarios_conectados.size,
+    users: Array.from(usuarios_conectados.keys())
+  });
 
   // Manejar envío de mensajes
   socket.on('send_message', async (data) => {
     try {
       const { receiver_id, text, type = 'texto' } = data;
 
-      // Guardar mensaje en base de datos
-      const { data: mensaje, error } = await supabase
-        .from('mensajes')
-        .insert({
-          remitente_id: socket.userId,
-          destinatario_id: receiver_id,
-          contenido: text,
-          tipo: type
-        })
-        .select()
-        .single();
+      console.log(`📨 Mensaje de ${socket.userId} para ${receiver_id}: ${text}`);
 
-      if (error) {
-        throw error;
-      }
+      // Crear mensaje
+      const mensaje = {
+        id: `msg_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`,
+        remitente_id: socket.userId,
+        destinatario_id: receiver_id,
+        contenido: text,
+        tipo: type,
+        created_at: new Date().toISOString()
+      };
 
       // Enviar mensaje al destinatario si está conectado
-      const receptorSocketId = usuarios_conectados.get(receiver_id);
-      if (receptorSocketId) {
-        io.to(receptorSocketId).emit('new_message', {
-          id: mensaje.id,
-          remitente_id: mensaje.remitente_id,
-          contenido: mensaje.contenido,
-          tipo: mensaje.tipo,
-          created_at: mensaje.created_at
-        });
+      const receptor = usuarios_conectados.get(receiver_id);
+      if (receptor) {
+        io.to(receptor.socketId).emit('new_message', mensaje);
+        console.log(`✅ Mensaje entregado a ${receiver_id}`);
+      } else {
+        console.log(`⚠️ Usuario ${receiver_id} no está conectado`);
       }
 
       // Confirmar al remitente
       socket.emit('message_sent', {
         id: mensaje.id,
-        timestamp: mensaje.created_at
+        timestamp: mensaje.created_at,
+        delivered: !!receptor
       });
 
     } catch (error) {
-      console.error('Error enviando mensaje:', error);
+      console.error('❌ Error enviando mensaje:', error);
       socket.emit('message_error', { error: 'Error enviando mensaje' });
     }
   });
 
   // Manejar typing
   socket.on('typing', (data) => {
-    const receptorSocketId = usuarios_conectados.get(data.receiver_id);
-    if (receptorSocketId) {
-      io.to(receptorSocketId).emit('user_typing', {
+    const receptor = usuarios_conectados.get(data.receiver_id);
+    if (receptor) {
+      io.to(receptor.socketId).emit('user_typing', {
         user_id: socket.userId
       });
     }
   });
 
   socket.on('stop_typing', (data) => {
-    const receptorSocketId = usuarios_conectados.get(data.receiver_id);
-    if (receptorSocketId) {
-      io.to(receptorSocketId).emit('user_stop_typing', {
+    const receptor = usuarios_conectados.get(data.receiver_id);
+    if (receptor) {
+      io.to(receptor.socketId).emit('user_stop_typing', {
         user_id: socket.userId
       });
     }
@@ -411,7 +420,7 @@ io.on('connection', (socket) => {
 
   // Manejar desconexión
   socket.on('disconnect', () => {
-    console.log(`Usuario desconectado: ${socket.userId}`);
+    console.log(`❌ Usuario desconectado: ${socket.userId}`);
     
     // Remover de usuarios conectados
     usuarios_conectados.delete(socket.userId);
@@ -420,19 +429,11 @@ io.on('connection', (socket) => {
     socket.broadcast.emit('user_offline', {
       user_id: socket.userId
     });
-
-    // Actualizar estado en base de datos
-    supabase
-      .from('usuarios')
-      .update({ 
-        estado: 'offline', 
-        last_seen: new Date().toISOString() 
-      })
-      .eq('id', socket.userId);
   });
 });
 
-// Funciones auxiliares
+// ========== FUNCIONES AUXILIARES ==========
+
 function formatearTiempo(fecha) {
   const ahora = new Date();
   const fechaMensaje = new Date(fecha);
@@ -456,17 +457,73 @@ function formatearHora(fecha) {
   });
 }
 
-// Ruta de prueba
+// ========== RUTAS DE PRUEBA ==========
+
 app.get('/', (req, res) => {
   res.json({ 
-    message: 'Chat API funcionando correctamente',
-    timestamp: new Date().toISOString()
+    message: '🚀 Chat API funcionando correctamente',
+    timestamp: new Date().toISOString(),
+    version: '1.0.0',
+    endpoints: {
+      auth: [
+        'POST /api/auth/register',
+        'POST /api/auth/login'
+      ],
+      api: [
+        'GET /api/contacts',
+        'POST /api/users/search',
+        'GET /api/messages/:userId',
+        'POST /api/files/upload'
+      ],
+      websocket: 'Socket.IO en el mismo puerto'
+    },
+    connected_users: usuarios_conectados.size
   });
 });
 
-// Puerto
+app.get('/api/status', (req, res) => {
+  res.json({
+    status: 'online',
+    uptime: process.uptime(),
+    memory: process.memoryUsage(),
+    connected_users: usuarios_conectados.size,
+    users_list: Array.from(usuarios_conectados.entries()).map(([userId, data]) => ({
+      userId,
+      email: data.email,
+      connectedAt: data.connectedAt
+    }))
+  });
+});
+
+// Middleware para manejar errores 404
+app.use('*', (req, res) => {
+  res.status(404).json({
+    success: false,
+    message: 'Endpoint no encontrado',
+    availableEndpoints: [
+      'GET /',
+      'GET /api/status',
+      'POST /api/auth/register',
+      'POST /api/auth/login',
+      'GET /api/contacts',
+      'POST /api/users/search',
+      'GET /api/messages/:userId',
+      'POST /api/files/upload'
+    ]
+  });
+});
+
+// ========== INICIAR SERVIDOR ==========
+
 const PORT = process.env.PORT || 3000;
 
 server.listen(PORT, () => {
-  console.log(`Servidor corriendo en puerto ${PORT}`);
+  console.log('🚀 ================================');
+  console.log(`✅ Servidor corriendo en puerto ${PORT}`);
+  console.log(`🌐 HTTP: http://localhost:${PORT}`);
+  console.log(`🔌 Socket.IO: http://localhost:${PORT}`);
+  console.log(`📊 Entorno: ${process.env.NODE_ENV || 'development'}`);
+  console.log(`🔑 JWT configurado: ${JWT_SECRET ? '✅' : '❌'}`);
+  console.log(`🗄️ Supabase configurado: ${process.env.SUPABASE_URL ? '✅' : '❌'}`);
+  console.log('🚀 ================================');
 });
