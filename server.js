@@ -356,16 +356,31 @@ app.post('/api/auth/login', async (req, res) => {
 
 // ========== RUTAS PROTEGIDAS ==========
 
+// ✅ MEJORADO: Obtener contactos del usuario
 app.get('/api/contacts', authenticateToken, async (req, res) => {
   try {
-    // Obtener conversaciones del usuario actual
-    const { data: conversaciones, error } = await supabase
-      .rpc('get_conversaciones');
-
+    const userId = req.user.userId;
+    console.log(`📇 Obteniendo contactos para usuario: ${userId}`);
+    
+    // Consulta mejorada para obtener contactos
+    const { data: contactos, error } = await supabase
+      .from('contactos')
+      .select(`
+        contacto_id,
+        usuarios!contactos_contacto_id_fkey (
+          id,
+          nombre,
+          foto,
+          last_seen,
+          estado
+        )
+      `)
+      .eq('usuario_id', userId);
+      
     if (error) {
-      console.error('Error obteniendo conversaciones:', error);
-      // Fallback a datos de prueba
-      const contactos = [
+      console.error('Error obteniendo contactos:', error);
+      // Fallback a datos de prueba si hay error
+      return res.json([
         {
           id: 'demo-user',
           username: 'Usuario Demo',
@@ -376,28 +391,119 @@ app.get('/api/contacts', authenticateToken, async (req, res) => {
           horaUltimoMensaje: '14:30',
           mensajesNoLeidos: 0
         }
-      ];
-      return res.json(contactos);
+      ]);
     }
-
-    const contactos = conversaciones.map(conv => ({
-      id: conv.contacto_id,
-      username: conv.contacto_nombre,
-      foto: conv.contacto_foto,
-      online: conv.contacto_estado === 'online',
-      ultimo_acceso: formatearTiempo(conv.contacto_last_seen),
-      ultimoMensaje: conv.ultimo_mensaje || 'Sin mensajes',
-      horaUltimoMensaje: conv.ultimo_mensaje_fecha ? formatearHora(conv.ultimo_mensaje_fecha) : '',
-      mensajesNoLeidos: parseInt(conv.mensajes_no_leidos) || 0
+    
+    // Formatear respuesta
+    const contactosFormateados = contactos.map(item => ({
+      id: item.usuarios.id,
+      username: item.usuarios.nombre,
+      foto: item.usuarios.foto || 'default.jpg',
+      ultimo_acceso: formatearTiempo(item.usuarios.last_seen),
+      online: item.usuarios.estado === 'online'
     }));
-
-    res.json(contactos);
-
+    
+    console.log(`✅ Contactos encontrados: ${contactosFormateados.length}`);
+    res.json(contactosFormateados);
+    
   } catch (error) {
-    console.error('Error obteniendo contactos:', error);
+    console.error('Error en /api/contacts:', error);
     res.status(500).json({ 
       success: false, 
-      message: 'Error obteniendo contactos' 
+      message: 'Error interno del servidor' 
+    });
+  }
+});
+
+// ✅ NUEVO: Agregar contacto
+app.post('/api/contacts/add', authenticateToken, async (req, res) => {
+  try {
+    const { contacto_id, username } = req.body;
+    const userId = req.user.userId;
+    
+    console.log(`👥 Usuario ${userId} intentando agregar contacto ${contacto_id} (${username})`);
+    
+    // Validar datos
+    if (!contacto_id) {
+      return res.status(400).json({ 
+        success: false, 
+        message: 'ID del contacto es requerido' 
+      });
+    }
+    
+    // Verificar que no se agregue a sí mismo
+    if (userId === contacto_id) {
+      return res.status(400).json({ 
+        success: false, 
+        message: 'No puedes agregarte a ti mismo' 
+      });
+    }
+    
+    // Verificar si el usuario a agregar existe
+    const { data: usuarioExiste, error: checkUserError } = await supabase
+      .from('usuarios')
+      .select('id, nombre')
+      .eq('id', contacto_id)
+      .single();
+      
+    if (checkUserError || !usuarioExiste) {
+      return res.status(404).json({ 
+        success: false, 
+        message: 'Usuario no encontrado' 
+      });
+    }
+    
+    // Verificar si ya son contactos
+    const { data: existingContact, error: checkError } = await supabase
+      .from('contactos')
+      .select('*')
+      .eq('usuario_id', userId)
+      .eq('contacto_id', contacto_id)
+      .maybeSingle();
+        
+    if (checkError && checkError.code !== 'PGRST116') {
+      console.error('Error verificando contacto existente:', checkError);
+      return res.status(500).json({ 
+        success: false, 
+        message: 'Error verificando contacto' 
+      });
+    }
+      
+    if (existingContact) {
+      return res.status(409).json({ 
+        success: false, 
+        message: 'Este usuario ya está en tus contactos' 
+      });
+    }
+    
+    // Agregar contacto (relación unidireccional)
+    const { data, error } = await supabase
+      .from('contactos')
+      .insert([
+        { usuario_id: userId, contacto_id: contacto_id }
+      ])
+      .select();
+        
+    if (error) {
+      console.error('Error agregando contacto:', error);
+      return res.status(500).json({ 
+        success: false, 
+        message: 'Error al agregar contacto' 
+      });
+    }
+    
+    console.log('✅ Contacto agregado exitosamente:', data);
+    res.json({ 
+      success: true, 
+      message: `Contacto ${usuarioExiste.nombre} agregado exitosamente`,
+      contact: data[0]
+    });
+    
+  } catch (error) {
+    console.error('Error en /api/contacts/add:', error);
+    res.status(500).json({ 
+      success: false, 
+      message: 'Error interno del servidor' 
     });
   }
 });
@@ -405,6 +511,9 @@ app.get('/api/contacts', authenticateToken, async (req, res) => {
 app.post('/api/users/search', authenticateToken, async (req, res) => {
   try {
     const { username } = req.body;
+    const userId = req.user.userId;
+
+    console.log(`🔍 Usuario ${userId} buscando: "${username}"`);
 
     if (!username || username.trim().length < 2) {
       return res.status(400).json({
@@ -413,8 +522,13 @@ app.post('/api/users/search', authenticateToken, async (req, res) => {
       });
     }
 
+    // Buscar usuarios que coincidan con el término
     const { data: usuarios, error } = await supabase
-      .rpc('buscar_usuarios', { termino: username.trim() });
+      .from('usuarios')
+      .select('id, nombre, telefono, email')
+      .ilike('nombre', `%${username.trim()}%`)
+      .neq('id', userId) // Excluir al usuario actual
+      .limit(10);
 
     if (error) {
       console.error('Error buscando usuario:', error);
@@ -425,6 +539,7 @@ app.post('/api/users/search', authenticateToken, async (req, res) => {
     }
 
     if (usuarios && usuarios.length > 0) {
+      console.log(`✅ Encontrados ${usuarios.length} usuarios`);
       res.json({
         success: true,
         usuario: {
@@ -434,6 +549,7 @@ app.post('/api/users/search', authenticateToken, async (req, res) => {
         }
       });
     } else {
+      console.log('❌ Usuario no encontrado');
       res.json({
         success: false,
         message: 'Usuario no encontrado'
@@ -452,9 +568,15 @@ app.post('/api/users/search', authenticateToken, async (req, res) => {
 app.get('/api/messages/:userId', authenticateToken, async (req, res) => {
   try {
     const otroUsuarioId = req.params.userId;
+    const userId = req.user.userId;
+
+    console.log(`💬 Obteniendo mensajes entre ${userId} y ${otroUsuarioId}`);
 
     const { data: mensajes, error } = await supabase
-      .rpc('get_mensajes_conversacion', { otro_usuario_id: otroUsuarioId });
+      .from('mensajes')
+      .select('*')
+      .or(`and(remitente_id.eq.${userId},destinatario_id.eq.${otroUsuarioId}),and(remitente_id.eq.${otroUsuarioId},destinatario_id.eq.${userId})`)
+      .order('created_at', { ascending: true });
 
     if (error) {
       console.error('Error obteniendo mensajes:', error);
@@ -465,9 +587,12 @@ app.get('/api/messages/:userId', authenticateToken, async (req, res) => {
     }
 
     // Marcar mensajes como leídos
-    await supabase.rpc('marcar_mensajes_leidos', { 
-      remitente_id: otroUsuarioId 
-    });
+    await supabase
+      .from('mensajes')
+      .update({ leido: true })
+      .eq('remitente_id', otroUsuarioId)
+      .eq('destinatario_id', userId)
+      .eq('leido', false);
 
     res.json(mensajes || []);
 
@@ -685,7 +810,7 @@ app.get('/', (req, res) => {
   res.json({ 
     message: '🚀 Chat API funcionando correctamente',
     timestamp: new Date().toISOString(),
-    version: '1.0.2',
+    version: '1.0.3',
     endpoints: {
       auth: [
         'POST /api/auth/register',
@@ -693,6 +818,7 @@ app.get('/', (req, res) => {
       ],
       api: [
         'GET /api/contacts',
+        'POST /api/contacts/add',
         'POST /api/users/search',
         'GET /api/messages/:userId',
         'POST /api/files/upload'
@@ -728,6 +854,7 @@ app.use('*', (req, res) => {
       'POST /api/auth/register',
       'POST /api/auth/login',
       'GET /api/contacts',
+      'POST /api/contacts/add',
       'POST /api/users/search',
       'GET /api/messages/:userId',
       'POST /api/files/upload'
